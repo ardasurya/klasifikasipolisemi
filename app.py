@@ -1,91 +1,116 @@
 import streamlit as st
-from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
+import pandas as pd
 import pickle
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
 
-# Initialize IndoBERT model and tokenizer
-@st.cache_resource
-def load_indobert_model():
-    tokenizer = AutoTokenizer.from_pretrained("indobenchmark/indobert-base-p1")
-    model = AutoModelForSequenceClassification.from_pretrained("indobenchmark/indobert-base-p1")
-    classifier = pipeline("text-classification", model=model, tokenizer=tokenizer)
-    return classifier
+# Initialize sidebar menu
+st.sidebar.title("Menu")
+menu_option = st.sidebar.selectbox("Pilih Menu:", ["Sistem Klasifikasi Polisemi", "Train Model"])
 
-# Function to load the uploaded model
-def load_custom_model(uploaded_file):
-    try:
-        model = pickle.load(uploaded_file)
-        return model
-    except Exception as e:
-        st.error(f"Gagal memuat model: {e}")
-        return None
-
-# Function to classify polysemy using IndoBERT
-def classify_with_indobert(word, context_sentences, indobert_classifier):
+# Function to train a custom model
+def train_model(data):
     """
-    Use IndoBERT to classify whether the word is polysemous.
-    This is a simplified example using text classification.
+    Train a logistic regression model using TF-IDF features.
     """
-    context = " ".join(context_sentences)
-    prediction = indobert_classifier(context)[0]  # Simplify to binary classification logic
-    nilai = 1 - prediction['score']
-    return f"'{word}' dikategorikan sebagai {'polysemous' if prediction['label'] == 'LABEL_1' else 'polysemi'} dengan nilai confidence {nilai:.2f}."
+    # Vectorize sentences using TF-IDF
+    vectorizer = TfidfVectorizer()
+    X = vectorizer.fit_transform(data['context_1'] + " " + data['context_2'])
+    y = data['is_polysemous']
+    
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Train a logistic regression model
+    model = LogisticRegression()
+    model.fit(X_train, y_train)
+    
+    # Evaluate the model
+    y_pred = model.predict(X_test)
+    report = classification_report(y_test, y_pred, output_dict=True)
+    
+    return model, vectorizer, report
 
-# Function to classify polysemy using a custom model
-def classify_with_custom_model(word, context_sentences, model):
-    """
-    Use the uploaded custom model to classify polysemy.
-    Adjust this based on the custom model's logic.
-    """
-    contexts = [sentence for sentence in context_sentences if word in sentence]
-    if len(contexts) > 1:
-        # Example: simulate prediction using the custom model
-        score = model.predict([word])  # Adjust as per your custom model
-        return f"'{word}' is polysemous with a confidence score of {score}."
-    return f"'{word}' does not appear to be polysemous."
-
-# Streamlit app
-st.title("Sistem Klasifikasi Bahasa Polisemi - M.Yamin")
-
-st.write("""
-Aplikasi ini mengidentifikasi apakah suatu kata dalam bahasa Indonesia bersifat polisemi (yaitu, memiliki banyak arti dalam konteks yang berbeda). 
-Anda dapat memilih untuk menggunakan model IndoBERT atau mengunggah model kustom Anda sendiri.
-""")
-
-# Model selection
-model_option = st.radio(
-    "Pilih Model yang akan digunakan:",
-    ("IndoBERT", "Upload Model")
-)
-
-if model_option == "Upload Model":
-    uploaded_file = st.file_uploader("Upload Model anda Sendiri (e.g., .pkl):", type=["pkl"])
+# Train Model Menu
+if menu_option == "Train Model":
+    st.title("Train a Custom Model")
+    st.write("""
+    Upload a dataset to train a custom polysemy classification model. 
+    The dataset should be a CSV file with the following columns:
+    - `word`: The word to analyze.
+    - `context_1`: The first context sentence.
+    - `context_2`: The second context sentence.
+    - `is_polysemous`: A boolean indicating if the word is polysemous.
+    """)
+    
+    # File uploader
+    uploaded_file = st.file_uploader("Upload dataset (CSV format):", type=["csv"])
+    
     if uploaded_file:
-        model = load_custom_model(uploaded_file)
-        if model:
-            st.success("Custom model Berhasil Diupload!")
-        else:
-            st.error("Gagal memuat custom model.")
-else:
-    st.info("Menggunakan IndoBERT model untuk klasifikasi.")
-    indobert_classifier = load_indobert_model()
-
-# Input section
-word = st.text_input("Masukan kata:")
-context_sentences = st.text_area("Masukkan Kalimat (Pisahkan kalimat dengan enter):")
-
-if st.button("Analyze"):
-    if not word or not context_sentences:
-        st.error("Tolong berikan kata dan kalimat konteksnya.")
-    else:
-        sentences = [sentence.strip() for sentence in context_sentences.split('\n') if sentence.strip()]
+        # Load the dataset
+        data = pd.read_csv(uploaded_file)
+        st.dataframe(data.head())
         
-        if model_option == "IndoBERT":
-            result = classify_with_indobert(word, sentences, indobert_classifier)
-        elif uploaded_file and model:
-            result = classify_with_custom_model(word, sentences, model)
+        # Train the model
+        if st.button("Train Model"):
+            model, vectorizer, report = train_model(data)
+            st.success("Model berhasil ditraining!")
+            st.json(report)  # Display evaluation report
+            
+            # Save the model and vectorizer
+            with open("custom_model.pkl", "wb") as model_file:
+                pickle.dump((model, vectorizer), model_file)
+            st.download_button(
+                label="Download Trained Model",
+                data=open("custom_model.pkl", "rb").read(),
+                file_name="custom_model.pkl",
+                mime="application/octet-stream"
+            )
+
+# Classify Polysemy Menu
+elif menu_option == "Sistem Klasifikasi Polisemi":
+    st.title("Sistem Klasifikasi Polisemi")
+    st.write("""
+    Aplikasi ini mengidentifikasi apakah suatu kata dalam bahasa Indonesia bersifat polisemi (yaitu, memiliki banyak arti dalam konteks yang berbeda). 
+    Anda dapat memilih untuk menggunakan model IndoBERT atau mengunggah model khusus.""")
+    
+    # Model selection
+    model_option = st.radio(
+        "Pilih Klasifikasi Model:",
+        ("Upload Model",)
+    )
+    
+    if model_option == "Upload Model":
+        uploaded_model = st.file_uploader("Upload model file yang sudah di training (e.g., .pkl):", type=["pkl"])
+        if uploaded_model:
+            model, vectorizer = pickle.load(uploaded_model)
+            st.success("Model sudah berhasil terpasang!")
         else:
-            st.error("Tidak ditemukan model yang valid. Harap unggah model khusus atau pilih IndoBERT.")
-            result = None
-        
-        if result:
-            st.success(result)
+            st.info("Silahkan upload model untuk mulai klasifikasi.")
+    
+    
+    # Input for classification
+    word = st.text_input("Masukkan kata untuk dianalisa:")
+    context_sentences = st.text_area("Masukkan kalimat (pisah kalimat dengan enter):")
+    
+    if st.button("Analyze"):
+        if not word or not context_sentences:
+            st.error("Silahkan isi input teks dan kalimat diatas.")
+        else:
+            sentences = [sentence.strip() for sentence in context_sentences.split('\n') if sentence.strip()]
+            
+            if model_option == "IndoBERT":
+                prediction = indobert_classifier(" ".join(sentences))[0]
+                result = f"'{word}' is classified as {'polysemous' if prediction['label'] == 'LABEL_1' else 'not polysemous'} with confidence {prediction['score']:.2f}."
+            elif uploaded_model and model and vectorizer:
+                X = vectorizer.transform([" ".join(sentences)])
+                is_polysemous = model.predict(X)[0]
+                result = f"'{word}' dikategorikan sebagai {'polisemi' if is_polysemous else 'bukan polisemi'}."
+            else:
+                st.error("No valid model found.")
+                result = None
+            
+            if result:
+                st.success(result)
